@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import { AppDataSource } from "../data-source.js";
 import { student } from "../entity/Student.js";
 import bcrypt from "bcrypt";
@@ -24,19 +24,25 @@ export interface MulterRequest extends Request {
   file?: Express.Multer.File | undefined;
 }
 
-export const signUp = async (
-  req: MulterRequest,
-  res: Response,
-  next: NextFunction
-) => {
+// Helper for unified error responses
+const handleError = (res: Response, err: unknown) => {
+  const error = err as CustomError;
+  const statusCode = error.statusCode || 500;
+  res.status(statusCode).json({
+    success: false,
+    message: error.message || "Internal Server Error",
+  });
+};
+
+export const signUp = async (req: MulterRequest, res: Response) => {
   try {
     const {
       first_name,
       father_name,
       grand_father_name,
-      christian_name,
       email,
       password,
+      id_number,
       gender,
       department_name,
       phone_number,
@@ -51,7 +57,7 @@ export const signUp = async (
       "department_name",
       "father_name",
       "grand_father_name",
-      "christian_name",
+      "id_number",
       "email",
       "password",
       "gender",
@@ -60,20 +66,19 @@ export const signUp = async (
 
     for (const field of requiredFields) {
       if (!req.body[field]) {
-        const error: CustomError = new Error(
-          `Missing required field: ${field}`
-        );
+        const error: CustomError = new Error(`Missing required field: ${field}`);
         error.statusCode = 400;
         throw error;
       }
     }
+
     const formatted_email = email.toLowerCase();
     const existingUser = await userRepository.findOne({
       where: [{ email: formatted_email }, { phone_number }],
     });
     if (existingUser) {
       const error: CustomError = new Error("User already exists");
-      error.statusCode = 500;
+      error.statusCode = 400;
       throw error;
     }
 
@@ -92,7 +97,7 @@ export const signUp = async (
       where: { department_name },
     });
     if (!existing_department) {
-      const error: CustomError = new Error("Department is required");
+      const error: CustomError = new Error("Department not found");
       error.statusCode = 400;
       throw error;
     }
@@ -101,7 +106,7 @@ export const signUp = async (
       first_name,
       father_name,
       grand_father_name,
-      christian_name,
+      id_number,
       email: formatted_email,
       password: hashedPassword,
       gender,
@@ -126,38 +131,30 @@ export const signUp = async (
     }
 
     const token = jwt.sign(
-      {
-        user_id: newStudent.id,
-        email: newStudent.email,
-        role: newStudent.role,
-      },
+      { user_id: newStudent.id, email: newStudent.email, role: newStudent.role },
       JWT_SECRET!,
       { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
     );
 
     const refreshToken = jwt.sign(
-      {
-        user_id: newStudent.id,
-        email: newStudent.email,
-        role: newStudent.role,
-      },
+      { user_id: newStudent.id, email: newStudent.email, role: newStudent.role },
       JWT_REFRESH_SECRET!,
       { expiresIn: JWT_REFRESH_EXPIRES_IN } as jwt.SignOptions
     );
 
-    // Set access token (1 day)
+    // Set cookies
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 1000 * 60 * 60 * 24,
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 1000 * 60 * 60 * 24, // 1 day
     });
 
     res.cookie("refresh_token", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 1000 * 60 * 60 * 24 * 7,
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
     });
 
     res.status(201).json({
@@ -172,15 +169,11 @@ export const signUp = async (
       },
     });
   } catch (err) {
-    next(err);
+    handleError(res, err);
   }
 };
 
-export const signIn = async (
-  req: MulterRequest,
-  res: Response,
-  next: NextFunction
-) => {
+export const signIn = async (req: MulterRequest, res: Response) => {
   try {
     const { phone_or_email, password } = req.body;
 
@@ -220,21 +213,13 @@ export const signIn = async (
     }
 
     const token = jwt.sign(
-      {
-        user_id: existingUser.id,
-        email: existingUser.email,
-        role: existingUser.role,
-      },
+      { user_id: existingUser.id, email: existingUser.email, role: existingUser.role },
       JWT_SECRET!,
       { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
     );
 
     const refreshToken = jwt.sign(
-      {
-        user_id: existingUser.id,
-        email: existingUser.email,
-        role: existingUser.role,
-      },
+      { user_id: existingUser.id, email: existingUser.email, role: existingUser.role },
       JWT_REFRESH_SECRET!,
       { expiresIn: JWT_REFRESH_EXPIRES_IN } as jwt.SignOptions
     );
@@ -242,14 +227,14 @@ export const signIn = async (
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 1000 * 60 * 60 * 24,
     });
 
     res.cookie("refresh_token", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 1000 * 60 * 60 * 24 * 7,
     });
 
@@ -265,22 +250,29 @@ export const signIn = async (
       },
     });
   } catch (err) {
-    next(err);
+    handleError(res, err);
   }
 };
+
 export const logout = (req: Request, res: Response) => {
   res.clearCookie("auth_token");
   res.clearCookie("refresh_token");
   res.json({ success: true, message: "Logged out successfully" });
 };
+
 export const refreshToken = (req: Request, res: Response) => {
   const refreshToken = req.cookies?.refresh_token;
-  if (!refreshToken) return res.status(401).json({ message: "Unauthorized" });
+  if (!refreshToken)
+    return res.status(401).json({ success: false, message: "Unauthorized" });
 
   try {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!);
     const newToken = jwt.sign(
-      { user_id: (decoded as any).user_id, email: (decoded as any).email, role: (decoded as any).role },
+      {
+        user_id: (decoded as any).user_id,
+        email: (decoded as any).email,
+        role: (decoded as any).role,
+      },
       process.env.JWT_SECRET!,
       { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
     );
@@ -288,12 +280,12 @@ export const refreshToken = (req: Request, res: Response) => {
     res.cookie("auth_token", newToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite: "none",
       maxAge: 1000 * 60 * 60 * 24,
     });
 
     res.json({ success: true, message: "Token refreshed" });
   } catch (err) {
-    return res.status(401).json({ message: "Invalid refresh token" });
+    return res.status(401).json({ success: false, message: "Invalid refresh token" });
   }
 };
